@@ -1,0 +1,17 @@
+# Overlay de Produção. Porta exposta: 8080.
+# Uso: docker compose -f docker-compose.yml -f docker-compose.production.yml --env-file .env.production up -d --build
+
+services:
+  db:
+    container_name: ecocoleta-db-production
+    volumes:
+      - ecocoleta-db-production-data:/var/opt/mssql
+
+  api:
+    container_name: ecocoleta-api-production
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-local}/ecocoleta-api:production
+    ports:
+      - "8080:8080"
+
+volumes:
+  ecocoleta-db-production-data:

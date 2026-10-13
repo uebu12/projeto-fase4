@@ -1,0 +1,49 @@
+# Definição base, compartilhada pelos dois ambientes.
+# Uso: sempre combinado com um overlay de ambiente, nunca sozinho:
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
+#
+# Os overlays (docker-compose.staging.yml / docker-compose.production.yml)
+# definem porta exposta, nome do projeto, variáveis de ambiente e volume do
+# banco de cada ambiente — por isso aqui não há `container_name`, `ports`
+# fixas nem valores de env hardcoded.
+
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${SA_PASSWORD}
+      MSSQL_PID: Express
+    networks:
+      - ecocoleta-net
+    healthcheck:
+      # /opt/mssql-tools18 é o caminho no server:2022-latest; -C ignora a
+      # validação do certificado autoassinado usado internamente pelo healthcheck.
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api:
+    build:
+      context: ./Fiap.EcoColeta.Api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT}
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DatabaseConnection: "Server=db,1433;Database=EcoColetaDb;User Id=sa;Password=${SA_PASSWORD};TrustServerCertificate=True;MultipleActiveResultSets=true;"
+      Jwt__Issuer: ${JWT_ISSUER}
+      Jwt__Key: ${JWT_KEY}
+    networks:
+      - ecocoleta-net
+
+networks:
+  ecocoleta-net:
+    driver: bridge

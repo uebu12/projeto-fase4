@@ -1,0 +1,158 @@
+name: CI/CD - EcoColeta API
+
+# Fluxo:
+#   1. build-and-test     -> roda sempre (push, PR, tag, manual)
+#   2. docker-build-push  -> só fora de PR; builda a imagem e publica no GHCR
+#   3. deploy-staging     -> só em push na main; deploy automático
+#   4. deploy-production  -> só em tag v*.*.*; exige aprovação manual
+#                             (configurada no Environment "production" em
+#                             Settings > Environments do repositório)
+#
+# Os dois jobs de deploy rodam em runner hospedado (ubuntu-latest) e apontam
+# a imagem publicada no GHCR para um Azure App Service (Web App for
+# Containers) já existente — ver seção "Deploy em Azure App Service" do
+# README e scripts/azure-setup.sh para criar os recursos uma única vez.
+# Não há servidor próprio para manter: o Azure é quem roda o container.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+          cache: true
+          cache-dependency-path: "**/*.csproj"
+
+      - name: Restore
+        run: dotnet restore Fiap.EcoColeta.sln
+
+      - name: Build
+        run: dotnet build Fiap.EcoColeta.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test Fiap.EcoColeta.sln -c Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory ./test-results
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/*.trx
+
+  docker-build-push:
+    name: Build & Push Docker image
+    needs: build-and-test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Define tags for this build
+        id: tags
+        run: |
+          TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7}"
+          if [[ "${{ github.ref }}" == refs/heads/main ]]; then
+            TAGS="$TAGS,${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:staging"
+          fi
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAGS="$TAGS,${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:production,${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./Fiap.EcoColeta.Api
+          file: ./Fiap.EcoColeta.Api/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-staging:
+    name: Deploy - Staging
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://ecocoleta-staging.azurewebsites.net/swagger
+    steps:
+      - name: Deploy no Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ecocoleta-staging
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_STAGING }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:staging
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fs https://ecocoleta-staging.azurewebsites.net/swagger/index.html > /dev/null; then
+              echo "Staging no ar e saudável."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "A API não respondeu a tempo (o App Service pode levar um pouco para puxar a imagem nova)."
+          exit 1
+
+  deploy-production:
+    name: Deploy - Production
+    needs: docker-build-push
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://ecocoleta-producao.azurewebsites.net/swagger
+    steps:
+      - name: Deploy no Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ecocoleta-producao
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_PRODUCTION }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:production
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fs https://ecocoleta-producao.azurewebsites.net/swagger/index.html > /dev/null; then
+              echo "Produção no ar e saudável."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "A API não respondeu a tempo (o App Service pode levar um pouco para puxar a imagem nova)."
+          exit 1

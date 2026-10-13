@@ -1,0 +1,26 @@
+# Build outputs
+**/bin/
+**/obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# Secrets - nunca commitar
+.env
+.env.staging
+.env.production
+*.env.local
+
+# Test results
+test-results/
+*.trx
+
+# OS
+.DS_Store
+Thumbs.db

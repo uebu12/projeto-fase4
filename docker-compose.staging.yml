@@ -1,0 +1,17 @@
+# Overlay de Staging. Porta exposta: 8081.
+# Uso: docker compose -f docker-compose.yml -f docker-compose.staging.yml --env-file .env.staging up -d --build
+
+services:
+  db:
+    container_name: ecocoleta-db-staging
+    volumes:
+      - ecocoleta-db-staging-data:/var/opt/mssql
+
+  api:
+    container_name: ecocoleta-api-staging
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-local}/ecocoleta-api:staging
+    ports:
+      - "8081:8080"
+
+volumes:
+  ecocoleta-db-staging-data:
