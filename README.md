@@ -10,7 +10,11 @@ tipos de resíduo, gerar **alertas automáticos** quando a capacidade de um pont
 se aproxima do limite, e produzir **relatórios ESG** com estimativa de impacto
 ambiental (CO2 evitado / equivalente em árvores preservadas).
 
-**Integrante:** Gabriel Furquim
+**Integrantes:**
+- Gabriel Rodrigues de Lima Furquim de Moraes
+- Raphael Henrique Soares Semede ([raphasemede@gmail.com](mailto:raphasemede@gmail.com))
+- Crystian Lopes do Carmo ([crystianlopes8@outlook.com](mailto:crystianlopes8@outlook.com))
+- Jefferson Nery Martins ([jefferson.nery.me@gmail.com](mailto:jefferson.nery.me@gmail.com))
 
 ## ✅ Status do projeto
 
@@ -21,8 +25,8 @@ ambiental (CO2 evitado / equivalente em árvores preservadas).
 |Docker build|✅ `16/16 FINISHED`|
 |Pipeline CI/CD (GitHub Actions)|✅ build → test → build/push imagem → deploy staging → deploy produção|
 |Containerização|✅ API + SQL Server orquestrados via Docker Compose|
-|Deploy staging|☐ *(preencher após rodar o pipeline — ver checklist)*|
-|Deploy produção|☐ *(preencher após rodar o pipeline — ver checklist)*|
+|Deploy staging|✅ rodando em `https://ecocoleta-staging.azurewebsites.net`|
+|Deploy produção|✅ rodando em `https://ecocoleta-producao.azurewebsites.net` (com aprovação manual)|
 
 ## Arquitetura
 
@@ -145,7 +149,9 @@ Os dois podem rodar ao mesmo tempo, na mesma máquina, em portas diferentes —
 cada um com seu próprio container de banco, volume e rede isolada.
 
 - Staging: `http://localhost:8081/swagger`
-- Produção: `http://localhost:8080/swagger`
+- Produção: `http://localhost:8080/health` (o Swagger é desativado de propósito em
+  `ASPNETCORE_ENVIRONMENT=Production`, local ou no Azure — use o `/health` para
+  confirmar que subiu, e o Insomnia/Postman para testar os endpoints de fato)
 
 Ao subir, a API aplica as migrações do EF Core automaticamente contra o
 SQL Server do container (com retry, caso o banco ainda esteja inicializando —
@@ -170,8 +176,15 @@ docker compose -f docker-compose.yml -f docker-compose.staging.yml down -v     #
 |-|-|-|
 | `build-and-test` | sempre (push, PR, tag, manual) | `dotnet restore` → `dotnet build` → `dotnet test`, publica o `.trx` como artefato |
 | `docker-build-push` | fora de PRs | builda a imagem da API e publica no GitHub Container Registry (GHCR), com tags `sha-<commit>`, `staging` (push na `main`) e `production` + `v*.*.*` (tag de versão) |
-| `deploy-staging` | push na branch `main` | aponta o Azure Web App `ecocoleta-staging` para a tag `:staging` do GHCR, health check via `/swagger` |
-| `deploy-production` | push de uma tag `v*.*.*` (ex: `git tag v1.0.0 && git push --tags`) | mesma coisa, Web App `ecocoleta-producao`, tag `:production` — **exige aprovação manual** |
+| `deploy-staging` | push na branch `main` | aponta o Azure Web App `ecocoleta-staging` para a tag `sha-<commit>` dessa build no GHCR, health check via `/health` |
+| `deploy-production` | push de uma tag `v*.*.*` (ex: `git tag v1.0.2 && git push --tags`) | mesma coisa, Web App `ecocoleta-producao`, tag `sha-<commit>` — **exige aprovação manual** |
+
+> Por que `sha-<commit>` e não `:staging`/`:production`: o Azure App Service só
+> percebe que precisa puxar uma imagem nova quando a *referência* da imagem
+> muda. Com uma tag fixa (`:staging`), o nome continua igual a cada deploy e o
+> Azure não reinicia o container — por isso o deploy aponta para a tag única
+> gerada a cada build (`sha-<commit>`), que garante que cada deploy sempre
+> reflita o commit publicado.
 
 ### Por que staging é automático e produção exige aprovação
 
@@ -221,12 +234,17 @@ chmod +x azure-setup.sh
 ./azure-setup.sh
 ```
 
-O script pede a senha do admin do SQL Server e a chave JWT, depois cria:
-resource group, um App Service Plan (Linux, B1) compartilhado pelos dois
-Web Apps, os Web Apps `ecocoleta-staging` e `ecocoleta-producao`, um Azure
-SQL Server lógico com os bancos `EcoColetaDb-Staging` e
-`EcoColetaDb-Producao`, e já configura as variáveis de ambiente de cada Web
-App (`ConnectionStrings__DatabaseConnection`, `Jwt__Key` etc.).
+O script usa o resource group `rs-fiap-on` que você já tem (ajuste a variável
+`RESOURCE_GROUP` no topo do script se o seu tiver outro nome) — ele detecta a
+região desse grupo automaticamente, não cria um novo. Pede a senha do admin
+do SQL Server e a chave JWT, depois cria dentro dele: um App Service Plan
+(Linux, B1) compartilhado pelos dois Web Apps, os Web Apps
+`ecocoleta-staging` e `ecocoleta-producao`, um Azure SQL Server lógico com os
+bancos `EcoColetaDb-Staging` e `EcoColetaDb-Producao`, e já configura as
+variáveis de ambiente de cada Web App
+(`ConnectionStrings__DatabaseConnection`, `Jwt__Key` etc.) — sem mexer nos
+recursos que já existiam ali (App Service Plan, bancos ou outros Web Apps de
+outros projetos).
 
 > Prefere usar o Portal em vez da CLI? O mesmo resultado se obtém pela tela
 > "Create Web App" (aba Basics: **Publish = Container**, **OS = Linux**) —
@@ -244,10 +262,10 @@ registry.
 
 ```bash
 az webapp deployment list-publishing-profiles \
-  --resource-group rg-ecocoleta --name ecocoleta-staging --xml
+  --resource-group rs-fiap-on --name ecocoleta-staging --xml
 
 az webapp deployment list-publishing-profiles \
-  --resource-group rg-ecocoleta --name ecocoleta-producao --xml
+  --resource-group rs-fiap-on --name ecocoleta-producao --xml
 ```
 
 (ou, pelo Portal: abra o Web App → "Download publish profile"). Cole o
@@ -262,15 +280,20 @@ Pipeline CI/CD.
 
 ```bash
 # Para o App Service Plan (os dois Web Apps compartilham o mesmo plano B1)
-az webapp stop --resource-group rg-ecocoleta --name ecocoleta-staging
-az webapp stop --resource-group rg-ecocoleta --name ecocoleta-producao
+az webapp stop --resource-group rs-fiap-on --name ecocoleta-staging
+az webapp stop --resource-group rs-fiap-on --name ecocoleta-producao
 
 # Liga de novo quando for apresentar/corrigir
-az webapp start --resource-group rg-ecocoleta --name ecocoleta-staging
-az webapp start --resource-group rg-ecocoleta --name ecocoleta-producao
+az webapp start --resource-group rs-fiap-on --name ecocoleta-staging
+az webapp start --resource-group rs-fiap-on --name ecocoleta-producao
 
-# Apaga tudo ao final do semestre
-az group delete --name rg-ecocoleta --yes --no-wait
+# Apaga só os recursos do EcoColeta ao final do semestre (o resource group
+# rs-fiap-on é compartilhado com outros projetos da FIAP — NÃO dar
+# "az group delete" nele, isso apagaria os outros projetos também)
+az webapp delete --resource-group rs-fiap-on --name ecocoleta-staging
+az webapp delete --resource-group rs-fiap-on --name ecocoleta-producao
+az appservice plan delete --resource-group rs-fiap-on --name plan-ecocoleta --yes
+az sql server delete --resource-group rs-fiap-on --name sql-ecocoleta --yes
 ```
 
 ---
@@ -339,18 +362,64 @@ App Service") — a API aplica as migrações nele sozinha no primeiro start.
 
 ## Prints do funcionamento
 
-> *Substituir pelos prints reais após rodar o pipeline.* Os prints de
-> staging/produção são das URLs reais do Azure (`*.azurewebsites.net`);
-> `localhost` só se aplica rodando os overlays do Compose na sua própria
-> máquina.
+Prints reais tirados rodando o pipeline de verdade contra os dois ambientes
+no Azure (pasta [`docs/prints`](./docs/prints)):
 
-- [ ] Pipeline do GitHub Actions rodando — jobs `build-and-test` e `docker-build-push` verdes
-- [ ] Imagem publicada no GHCR (`Packages` do repositório, visibilidade Public)
-- [ ] Job `deploy-staging` verde + Web App `ecocoleta-staging` mostrando a imagem `:staging` em "Deployment Center"
-- [ ] Swagger respondendo em `https://ecocoleta-staging.azurewebsites.net/swagger` (staging)
-- [ ] Aprovação manual do Environment `production` e job `deploy-production` verde
-- [ ] Swagger respondendo em `https://ecocoleta-producao.azurewebsites.net/swagger` (produção)
-- [ ] Um fluxo completo (login + 1-2 endpoints) testado contra staging e contra produção
+- [x] Pipeline do GitHub Actions rodando — `build-and-test`, `docker-build-push`
+  e `deploy-staging` verdes
+
+  ![Pipeline staging com sucesso](docs/prints/pipeline-staging-sucesso.png)
+
+- [x] Job `deploy-production` verde, com aprovação manual do Environment
+  `production` já concedida
+
+  ![Pipeline produção com sucesso](docs/prints/pipeline-producao-sucesso.png)
+
+- [x] Swagger respondendo em staging, com o endpoint `/health` listado junto
+  dos demais (Swagger fica disponível em Staging; é desativado de propósito
+  em Produção — ver nota abaixo)
+
+  ![Swagger de staging com os endpoints da API](docs/prints/swagger-staging-endpoints.png)
+
+- [x] Login funcionando contra staging, retornando o token JWT
+
+  ![Login OK no Swagger de staging](docs/prints/swagger-staging-login-ok.png)
+
+- [x] `https://ecocoleta-producao.azurewebsites.net/health` respondendo
+  `{"status":"ok"}` (produção não expõe Swagger, então o health check e os
+  testes reais passam pelo Insomnia/Postman ou por essa rota)
+
+  ![Health check de produção](docs/prints/producao-health-ok.png)
+
+- [x] Recursos criados no Azure (resource group `rs-fiap-on`, compartilhado
+  com outros projetos da FIAP): os dois Web Apps, o SQL Server lógico e os
+  dois bancos (um por ambiente)
+
+  ![Recursos no portal do Azure](docs/prints/azure-portal-recursos.png)
+
+---
+
+## Desafios encontrados e aprendizados
+
+Colocar o pipeline pra rodar de verdade contra o Azure (em vez de só
+funcionar "no papel") expôs alguns problemas que só aparecem com a infra
+real. Vale registrar porque foram as partes mais instrutivas do desafio:
+
+| Problema | Causa | Solução |
+|-|-|-|
+| `RequestDisallowedByAzure` ao criar o App Service Plan e o SQL Server | Azure for Students só libera algumas regiões por política da subscription (`chilecentral` funcionou, `eastus`/`brazilsouth` não) | Fixar a região em `scripts/azure-setup.sh` e passar `--location` explícito em todo `az ... create` (sem a flag, o recurso tentava herdar a região do resource group e falhava) |
+| Mesmo erro, de novo, após corrigir a região | Azure for Students limita a **1 App Service Plan por subscription** | Script detecta um plano Linux já existente (`reserved==true`) e reaproveita em vez de tentar criar outro |
+| `azure/webapps-deploy@v3` falhando com `Failed to get app runtime OS` | Web Apps novos vêm com a **autenticação básica do SCM/Kudu desativada por padrão**, que é o que o publish profile usa para falar com o Azure | `az resource update ... basicPublishingCredentialsPolicies ... properties.allow=true` em cada Web App (automatizado no script) |
+| Deploy "passava" no Actions, mas o container nunca atualizava | O Azure só percebe que precisa puxar uma imagem nova quando a **referência da imagem muda** — reusar a mesma tag (`:staging`) a cada deploy não disparava um pull novo | Trocar para a tag imutável `sha-<commit>` (gerada a cada build) no passo de deploy, garantindo que cada deploy aponte para uma imagem nova de verdade |
+| Health check de produção sempre expirava (`Failed to respond in time`) | O `Program.cs` desativa o Swagger de propósito em `Production` (boa prática — não expor documentação interativa em produção), mas o health check testava justamente `/swagger/index.html` | Endpoint dedicado `/health`, disponível em qualquer ambiente, usado pelo pipeline e documentado no README |
+| Login retornando `500` genérico em produção | Chave JWT configurada no Web App tinha só 184 bits — o algoritmo `HS256` exige no mínimo 256 bits | Gerar a chave com `openssl rand -base64 32` (32 bytes = 256 bits) e atualizar o app setting `Jwt__Key` nos dois Web Apps |
+
+O fio condutor: **a maior parte dos problemas só aparece com a infraestrutura
+de verdade rodando** — um App Service Plan limitado por quota, uma política de
+região, uma configuração de segurança desativada por padrão, o comportamento
+de cache de imagem do Azure. Nenhum desses apareceria testando só localmente
+com Docker Compose, o que reforça por que o desafio pede o deploy real em vez
+de só a containerização.
 
 ## Tecnologias utilizadas
 
@@ -409,10 +478,10 @@ que a restrição por role está funcionando
 
 | Item | OK |
 |-|-|
-| Projeto compactado em .ZIP com estrutura organizada | ☐ |
+| Projeto compactado em .ZIP com estrutura organizada | ✅ |
 | Dockerfile funcional | ✅ |
 | docker-compose.yml ou arquivos Kubernetes | ✅ |
 | Pipeline com etapas de build, teste e deploy | ✅ |
-| README.md com instruções e prints | ☐ *(prints pendentes — ver seção acima)* |
-| Documentação técnica com evidências (PDF ou PPT) | ☐ *(prints pendentes)* |
-| Deploy realizado nos ambientes staging e produção | ☐ *(rodar o pipeline e confirmar)* |
+| README.md com instruções e prints | ✅ |
+| Documentação técnica com evidências (PDF ou PPT) | ✅ |
+| Deploy realizado nos ambientes staging e produção | ✅ |
