@@ -110,12 +110,16 @@ jobs:
       name: staging
       url: https://ecocoleta-staging.azurewebsites.net/swagger
     steps:
+      - name: Definir tag imutável desta build
+        id: image
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       - name: Deploy no Azure App Service
         uses: azure/webapps-deploy@v3
         with:
           app-name: ecocoleta-staging
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_STAGING }}
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:staging
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}
 
       - name: Health check
         run: |
@@ -138,12 +142,16 @@ jobs:
       name: production
       url: https://ecocoleta-producao.azurewebsites.net/swagger
     steps:
+      - name: Definir tag imutável desta build
+        id: image
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       - name: Deploy no Azure App Service
         uses: azure/webapps-deploy@v3
         with:
           app-name: ecocoleta-producao
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_PRODUCTION }}
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:production
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}
 
       - name: Health check
         run: |
