@@ -120,7 +120,7 @@ jobs:
       - name: Health check
         run: |
           for i in $(seq 1 12); do
-            if curl -fs https://ecocoleta-staging.azurewebsites.net/swagger/index.html > /dev/null; then
+            if curl -fs https://ecocoleta-staging.azurewebsites.net/health > /dev/null; then
               echo "Staging no ar e saudável."
               exit 0
             fi
@@ -147,12 +147,14 @@ jobs:
 
       - name: Health check
         run: |
-          for i in $(seq 1 12); do
-            if curl -fs https://ecocoleta-producao.azurewebsites.net/swagger/index.html > /dev/null; then
+          # Produção leva mais tempo na primeira vez (pull de imagem "frio" +
+          # migrations contra o Azure SQL), por isso mais tentativas que o staging.
+          for i in $(seq 1 20); do
+            if curl -fs https://ecocoleta-producao.azurewebsites.net/health > /dev/null; then
               echo "Produção no ar e saudável."
               exit 0
             fi
-            sleep 10
+            sleep 15
           done
           echo "A API não respondeu a tempo (o App Service pode levar um pouco para puxar a imagem nova)."
           exit 1

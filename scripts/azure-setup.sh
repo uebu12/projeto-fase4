@@ -13,8 +13,15 @@
 
 set -euo pipefail
 
-RESOURCE_GROUP="rg-ecocoleta"
-LOCATION="brazilsouth"
+# Nome do resource group já existente na sua conta Azure for Students.
+# Troque aqui se o seu tiver outro nome (ex: rodando `az group list -o table`).
+RESOURCE_GROUP="rs-fiap-on"
+# Região liberada para a subscription Azure for Students — NÃO necessariamente
+# a mesma região do resource group em si (a "location" de um resource group é
+# só metadado; os recursos dentro dele podem ficar em outra região). Troque
+# aqui se a sua conta liberar outra (rode `az group list -o table` e veja a
+# região dos recursos que você já tem funcionando).
+LOCATION="chilecentral"
 PLAN_NAME="plan-ecocoleta"
 APP_STAGING="ecocoleta-staging"      # vira https://ecocoleta-staging.azurewebsites.net
 APP_PRODUCTION="ecocoleta-producao"  # vira https://ecocoleta-producao.azurewebsites.net
@@ -26,16 +33,32 @@ echo
 read -rsp "Chave JWT para assinar os tokens (string longa e aleatória, 32+ caracteres): " JWT_KEY
 echo
 
-echo "==> Criando resource group '$RESOURCE_GROUP'..."
-az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
+echo "==> Verificando o resource group '$RESOURCE_GROUP'..."
+if az group show --name "$RESOURCE_GROUP" &>/dev/null; then
+  echo "    Resource group já existe — usando a região '$LOCATION' para os novos recursos."
+else
+  echo "    Não existe ainda, criando em '$LOCATION'..."
+  az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
+fi
 
-echo "==> Criando App Service Plan ($PLAN_NAME, Linux, B1)..."
-az appservice plan create \
-  --resource-group "$RESOURCE_GROUP" \
-  --name "$PLAN_NAME" \
-  --is-linux \
-  --sku B1 \
-  --output none
+echo "==> Verificando se já existe um App Service Plan Linux no grupo..."
+EXISTING_PLAN=$(az appservice plan list --resource-group "$RESOURCE_GROUP" \
+  --query "[?reserved==\`true\`].name | [0]" -o tsv 2>/dev/null || true)
+
+if [ -n "$EXISTING_PLAN" ]; then
+  PLAN_NAME="$EXISTING_PLAN"
+  echo "    Reaproveitando o plano Linux já existente: $PLAN_NAME (contas Azure for"
+  echo "    Students costumam liberar só 1 App Service Plan por subscription)."
+else
+  echo "==> Criando App Service Plan ($PLAN_NAME, Linux, B1) em '$LOCATION'..."
+  az appservice plan create \
+    --resource-group "$RESOURCE_GROUP" \
+    --name "$PLAN_NAME" \
+    --is-linux \
+    --sku B1 \
+    --location "$LOCATION" \
+    --output none
+fi
 
 echo "==> Criando Web App de staging ($APP_STAGING)..."
 az webapp create \
@@ -59,12 +82,13 @@ az webapp config appsettings set --resource-group "$RESOURCE_GROUP" --name "$APP
 az webapp config appsettings set --resource-group "$RESOURCE_GROUP" --name "$APP_PRODUCTION" \
   --settings WEBSITES_PORT=8080 --output none
 
-echo "==> Criando o servidor lógico do Azure SQL ($SQL_SERVER)..."
+echo "==> Criando o servidor lógico do Azure SQL ($SQL_SERVER) em '$LOCATION'..."
 az sql server create \
   --resource-group "$RESOURCE_GROUP" \
   --name "$SQL_SERVER" \
   --admin-user "$SQL_ADMIN_USER" \
   --admin-password "$SQL_ADMIN_PASSWORD" \
+  --location "$LOCATION" \
   --output none
 
 echo "==> Liberando o firewall do SQL Server para os Web Apps (serviços Azure)..."
